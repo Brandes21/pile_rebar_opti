@@ -13,7 +13,7 @@ st.markdown("Adjust parameters on the left and click **Calculate** to find optim
 # --- Sidebar Inputs ---
 st.sidebar.header("Optimization Goal & Parameters")
 
-# 1. Goal Selection (OUTSIDE form so it toggles instantly)
+# Goal Selection
 mode = st.sidebar.radio(
     "Optimization Goal:",
     ["Maximize Area", "Target Specific Area (cm²)"],
@@ -29,7 +29,7 @@ target_area_input = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 
-# 2. Geometry & Rules Form (INSIDE form to avoid auto-recalculating on every keystroke)
+# Form for geometry and constraints
 with st.sidebar.form(key="input_form"):
     st.subheader("Concrete & Lapping Rules")
 
@@ -43,6 +43,15 @@ with st.sidebar.form(key="input_form"):
         "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
         value=False,
         help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm."
+    )
+
+    st.markdown("---")
+    st.subheader("Mixed Diameters Rule")
+
+    allow_mixed_dia = st.checkbox(
+        "Allow mixed rebar diameters in same layer (Alternating / Symmetric)",
+        value=False,
+        help="Allows alternating two different bar sizes in a single layer (e.g. N/2 x Ø32 + N/2 x Ø25) while keeping full symmetry."
     )
 
     st.markdown("---")
@@ -76,35 +85,59 @@ if submit_button:
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
-    def max_rebars_in_ring(r_center, d_rebar):
-        req_clear_spacing = base_clear_spacing + (d_rebar if consider_lapping else 0.0)
-        
-        arg = (d_rebar + req_clear_spacing) / (2.0 * r_center)
-        if arg >= 1.0:
-            return 0
-        return math.floor(math.pi / math.asin(arg))
+    # Helper function: Check if N bars with mixed or single diameters fit in ring
+    def max_rebars_in_ring(r_center, d1, d2=None):
+        if d2 is None or d1 == d2:
+            d_eff = d1
+            req_clear_spacing = base_clear_spacing + (d_eff if consider_lapping else 0.0)
+            arg = (d_eff + req_clear_spacing) / (2.0 * r_center)
+            if arg >= 1.0:
+                return 0
+            return math.floor(math.pi / math.asin(arg))
+        else:
+            # For alternating mixed bars, N must be even (2, 4, 6, ...)
+            d_eff = (d1 + d2) / 2.0
+            max_d = max(d1, d2)
+            req_clear_spacing = base_clear_spacing + (max_d if consider_lapping else 0.0)
+            arg = (d_eff + req_clear_spacing) / (2.0 * r_center)
+            if arg >= 1.0:
+                return 0
+            n_max_raw = math.floor(math.pi / math.asin(arg))
+            return n_max_raw - (n_max_raw % 2) # Ensure even count
 
     results = []
 
-    def search_layers_recursive(layer_idx, current_outer_edge, parent_N, current_combo, d_current):
-        r_center = current_outer_edge - (d_current / 2.0)
-        if r_center <= d_current / 2.0:
+    def search_layers_recursive(layer_idx, current_outer_edge, parent_N, current_combo, d1, d2):
+        d_max_layer = max(d1, d2)
+        r_center = current_outer_edge - (d_max_layer / 2.0)
+        if r_center <= d_max_layer / 2.0:
             return
 
-        N_max = max_rebars_in_ring(r_center, d_current)
+        N_max = max_rebars_in_ring(r_center, d1, d2)
 
         if layer_idx == 1:
-            valid_N_list = list(range(1, N_max + 1))
+            valid_N_list = list(range(1, N_max + 1)) if d1 == d2 else list(range(2, N_max + 1, 2))
         else:
             valid_N_list = [n for n in range(1, min(N_max, parent_N) + 1) if parent_N % n == 0]
+            if d1 != d2:
+                valid_N_list = [n for n in valid_N_list if n % 2 == 0]
 
         for N in valid_N_list:
-            area_layer = N * math.pi * (d_current / 2.0)**2
-            inner_edge = current_outer_edge - d_current
+            if d1 == d2:
+                area_layer = N * math.pi * (d1 / 2.0)**2
+                label_text = f"Ø{d1} mm"
+            else:
+                area_layer = (N / 2.0) * math.pi * (d1 / 2.0)**2 + (N / 2.0) * math.pi * (d2 / 2.0)**2
+                label_text = f"{N//2}xØ{d1} + {N//2}xØ{d2} mm"
+
+            inner_edge = current_outer_edge - d_max_layer
             
             new_combo = current_combo + [{
                 'layer': layer_idx,
-                'diameter': d_current,
+                'd1': d1,
+                'd2': d2,
+                'diameter_text': label_text,
+                'max_d': d_max_layer,
                 'count': N,
                 'r_center': r_center,
                 'area_mm2': area_layer,
@@ -115,14 +148,29 @@ if submit_button:
             results.append(new_combo)
 
             if layer_idx < max_layers:
-                for d_next in rebar_sizes:
-                    gap = 2.0 * max(d_current, d_next)
+                # Build next layer rebar pairs
+                next_pairs = [(d, d) for d in rebar_sizes]
+                if allow_mixed_dia:
+                    for i_a in range(len(rebar_sizes)):
+                        for i_b in range(i_a + 1, len(rebar_sizes)):
+                            next_pairs.append((rebar_sizes[i_a], rebar_sizes[i_b]))
+
+                for d_next1, d_next2 in next_pairs:
+                    d_next_max = max(d_next1, d_next2)
+                    gap = 2.0 * max(d_max_layer, d_next_max)
                     next_outer_edge = inner_edge - gap
-                    search_layers_recursive(layer_idx + 1, next_outer_edge, N, new_combo, d_next)
+                    search_layers_recursive(layer_idx + 1, next_outer_edge, N, new_combo, d_next1, d_next2)
 
     if r_outer_edge_max > 0:
-        for d1 in rebar_sizes:
-            search_layers_recursive(1, r_outer_edge_max, None, [], d1)
+        # Initial pairs for layer 1
+        layer1_pairs = [(d, d) for d in rebar_sizes]
+        if allow_mixed_dia:
+            for i_a in range(len(rebar_sizes)):
+                for i_b in range(i_a + 1, len(rebar_sizes)):
+                    layer1_pairs.append((rebar_sizes[i_a], rebar_sizes[i_b]))
+
+        for d1, d2 in layer1_pairs:
+            search_layers_recursive(1, r_outer_edge_max, None, [], d1, d2)
 
     # Save results into Session State
     st.session_state["results"] = results
@@ -194,29 +242,30 @@ if "results" in st.session_state:
             else:
                 st.metric(label="Total Steel Area ($A_s$)", value=f"{total_area_cm2:.2f} cm²")
 
-            lap_text = f"Lapping (+{best_combo[0]['diameter']}mm extra space)" if consider_lapping else "No Lapping"
+            lap_text = f"Lapping (+{best_combo[0]['max_d']}mm extra space)" if consider_lapping else "No Lapping"
             st.caption(f"ℹ️ **Active Criteria:** Min Base Clear = {base_clear_spacing:.0f} mm | {lap_text}")
 
             table_data = []
             for idx, l in enumerate(best_combo):
                 chord_c2c = 2.0 * l['r_center'] * math.sin(math.pi / l['count'])
-                straight_clear_single = chord_c2c - l['diameter']
+                d_eff = (l['d1'] + l['d2']) / 2.0
+                straight_clear_single = chord_c2c - d_eff
                 
-                lap_clear = straight_clear_single - (l['diameter'] if consider_lapping else 0.0)
+                lap_clear = straight_clear_single - (l['max_d'] if consider_lapping else 0.0)
                 
                 if idx == 0:
                     gap = "—"
                 else:
-                    prev_d = best_combo[idx-1]['diameter']
-                    req_gap = 2 * max(prev_d, l['diameter'])
+                    prev_d = best_combo[idx-1]['max_d']
+                    req_gap = 2 * max(prev_d, l['max_d'])
                     gap = f"{best_combo[idx-1]['r_inner_edge'] - l['r_outer_edge']:.1f} mm (Req: {req_gap}mm)"
                 
                 table_data.append({
                     "Layer": f"Layer {l['layer']}",
-                    "Rebar Size": f"Ø{l['diameter']} mm",
+                    "Rebar Configuration": l['diameter_text'],
                     "Count": l['count'],
                     "Single Bar Clear": f"{straight_clear_single:.1f} mm",
-                    "Clear Gap at Lap": f"{lap_clear:.1f} mm (Min: {base_clear_spacing:.0f}mm)",
+                    "Clear Gap at Lap": f"{lap_clear:.1f} mm",
                     "Gap to Outer Layer": gap,
                     "Layer Area": f"{l['area_mm2']/100.0:.2f} cm²"
                 })
@@ -240,7 +289,7 @@ if "results" in st.session_state:
 
             for i, l in enumerate(best_combo):
                 r_c = l['r_center']
-                d = l['diameter']
+                d1, d2 = l['d1'], l['d2']
                 N = l['count']
                 
                 pitch_circle = plt.Circle((0, 0), r_c, color=colors[i], fill=False, linestyle=':', lw=1.5)
@@ -252,8 +301,12 @@ if "results" in st.session_state:
                 for idx, angle in enumerate(layer_angles):
                     x = r_c * np.cos(angle)
                     y = r_c * np.sin(angle)
-                    label = f"Layer {l['layer']}: {N}xØ{d}mm" if idx == 0 else None
-                    bar = plt.Circle((x, y), d / 2.0, color=colors[i], ec='black', lw=1, label=label)
+                    
+                    # Alternate diameters if mixed
+                    d_current = d1 if (idx % 2 == 0 or d1 == d2) else d2
+                    
+                    label = f"Layer {l['layer']}: {l['diameter_text']}" if idx == 0 else None
+                    bar = plt.Circle((x, y), d_current / 2.0, color=colors[i], ec='black', lw=1, label=label)
                     ax.add_patch(bar)
 
             lim = (pile_diameter / 2.0) * 1.1
