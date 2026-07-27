@@ -10,6 +10,18 @@ st.set_page_config(page_title="Concrete Pile Reinforcement Optimizer", layout="w
 st.title("🏗️ Concrete Pile Reinforcement Optimizer")
 st.markdown("Adjust parameters on the left and click **Calculate** to find optimal rebar layouts.")
 
+# --- Session State Initialization for Inter-dependent Widgets ---
+if "agg_small_key" not in st.session_state:
+    st.session_state["agg_small_key"] = False
+
+if "lapping_option_key" not in st.session_state:
+    st.session_state["lapping_option_key"] = "Consider Lapping (+1x rebar diameter extra space)"
+
+# Callback to automatically uncheck aggregate size < 20mm when "No Lapping Required" is chosen
+def on_lapping_change():
+    if st.session_state["lapping_option_key"] == "No Lapping Required":
+        st.session_state["agg_small_key"] = False
+
 # --- Sidebar Inputs inside a FORM ---
 st.sidebar.header("Optimization Goal & Parameters")
 
@@ -30,18 +42,23 @@ with st.sidebar.form(key="input_form"):
     st.markdown("---")
     st.subheader("Concrete & Lapping Rules")
 
-    # Lapping Selection
+    # Lapping Selection with Callback
     lapping_option = st.radio(
         "Lapping Condition:",
         ["Consider Lapping (+1x rebar diameter extra space)", "No Lapping Required"],
+        key="lapping_option_key",
+        on_change=on_lapping_change,
         help="Lapping adds 1x rebar diameter extra space between single bars so that at lap joints the clear gap doesn't drop below the minimum."
     )
 
-    # Aggregate Size Selection
+    # Aggregate Size Checkbox (disabled/deselected when No Lapping is selected)
+    is_no_lapping = (st.session_state["lapping_option_key"] == "No Lapping Required")
+    
     agg_small = st.checkbox(
         "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
-        value=False,
-        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm."
+        key="agg_small_key",
+        disabled=is_no_lapping,
+        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm. Automatically disabled if 'No Lapping Required' is selected."
     )
 
     st.markdown("---")
@@ -66,17 +83,14 @@ if submit_button:
         rebar_sizes = [16, 20, 25, 28, 32]
 
     # Base Spacing Calculation
-    base_clear_spacing = 80.0 if agg_small else 100.0
+    base_clear_spacing = 80.0 if (agg_small and not is_no_lapping) else 100.0
     consider_lapping = (lapping_option == "Consider Lapping (+1x rebar diameter extra space)")
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
     def max_rebars_in_ring(r_center, d_rebar):
-        # If lapping, required clear distance between single bars = base_clear + d_rebar
-        # At lap joint, taking up d_rebar leaves base_clear gap.
         req_clear_spacing = base_clear_spacing + (d_rebar if consider_lapping else 0.0)
         
-        # Chord distance formula: 2 * r_c * sin(pi / N) - d_rebar >= req_clear_spacing
         arg = (d_rebar + req_clear_spacing) / (2.0 * r_center)
         if arg >= 1.0:
             return 0
@@ -144,14 +158,12 @@ if "results" in st.session_state:
     if not results:
         st.error("No valid layout found within the given constraints.")
     else:
-        # Sort layouts based on mode
         if mode == "Maximize Area":
             sorted_combos = sorted(results, key=lambda combo: sum(l['area_mm2'] for l in combo), reverse=True)
         else:
             target_area_mm2 = target_area_input * 100.0
             sorted_combos = sorted(results, key=lambda combo: abs(sum(l['area_mm2'] for l in combo) - target_area_mm2))
 
-        # Top Options Radio Selection Bar
         st.subheader("🎯 Select Configuration Option")
         
         choice_options = []
@@ -179,7 +191,6 @@ if "results" in st.session_state:
 
         st.markdown("---")
 
-        # --- Display Selected Option Details ---
         col1, col2 = st.columns([1, 1])
 
         with col1:
@@ -195,7 +206,6 @@ if "results" in st.session_state:
             else:
                 st.metric(label="Total Steel Area ($A_s$)", value=f"{total_area_cm2:.2f} cm²")
 
-            # Active rules banner
             lap_text = f"Lapping (+{best_combo[0]['diameter']}mm extra)" if consider_lapping else "No Lapping"
             st.caption(f"ℹ️ **Active Criteria:** Min Base Clear = {base_clear_spacing:.0f} mm | {lap_text}")
 
@@ -204,7 +214,6 @@ if "results" in st.session_state:
                 chord_c2c = 2.0 * l['r_center'] * math.sin(math.pi / l['count'])
                 straight_clear_single = chord_c2c - l['diameter']
                 
-                # Effective clear gap at lap location
                 lap_clear = straight_clear_single - (l['diameter'] if consider_lapping else 0.0)
                 
                 if idx == 0:
@@ -230,11 +239,9 @@ if "results" in st.session_state:
             st.subheader("Cross-Section Diagram")
             fig, ax = plt.subplots(figsize=(7, 7))
 
-            # Concrete Pile
             circle_concrete = plt.Circle((0, 0), pile_diameter / 2.0, color='#e0e0e0', ec='black', lw=2)
             ax.add_patch(circle_concrete)
 
-            # Shear Stirrup Ring
             r_shear = (pile_diameter / 2.0) - concrete_cover
             circle_shear = plt.Circle((0, 0), r_shear, color='none', ec='red', lw=2, linestyle='--')
             ax.add_patch(circle_shear)
