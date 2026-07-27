@@ -28,12 +28,28 @@ with st.sidebar.form(key="input_form"):
     )
     
     st.markdown("---")
+    st.subheader("Concrete & Lapping Rules")
+
+    # Lapping Selection
+    lapping_option = st.radio(
+        "Lapping Condition:",
+        ["Consider Lapping (+1x rebar diameter extra space)", "No Lapping Required"],
+        help="Lapping adds 1x rebar diameter extra space between single bars so that at lap joints the clear gap doesn't drop below the minimum."
+    )
+
+    # Aggregate Size Selection
+    agg_small = st.checkbox(
+        "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
+        value=False,
+        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm."
+    )
+
+    st.markdown("---")
     st.subheader("Pile Geometry & Rebars")
     
     pile_diameter = st.number_input("Pile Diameter (mm)", value=900.0, step=50.0)
     concrete_cover = st.number_input("Concrete Cover (mm)", value=75.0, step=5.0)
     shear_rebar_dia = st.number_input("Shear Reinforcement Diameter (mm)", value=14.0, step=1.0)
-    min_clear_spacing = st.number_input("Min. Edge Clear Distance in Ring (mm)", value=100.0, step=5.0)
 
     max_layers = st.slider("Maximum Allowable Layers", min_value=1, max_value=5, value=4)
 
@@ -49,10 +65,19 @@ if submit_button:
         st.error("Invalid rebar sizes string. Please enter numbers separated by commas.")
         rebar_sizes = [16, 20, 25, 28, 32]
 
+    # Base Spacing Calculation
+    base_clear_spacing = 80.0 if agg_small else 100.0
+    consider_lapping = (lapping_option == "Consider Lapping (+1x rebar diameter extra space)")
+
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
     def max_rebars_in_ring(r_center, d_rebar):
-        arg = (d_rebar + min_clear_spacing) / (2.0 * r_center)
+        # If lapping, required clear distance between single bars = base_clear + d_rebar
+        # At lap joint, taking up d_rebar leaves base_clear gap.
+        req_clear_spacing = base_clear_spacing + (d_rebar if consider_lapping else 0.0)
+        
+        # Chord distance formula: 2 * r_c * sin(pi / N) - d_rebar >= req_clear_spacing
+        arg = (d_rebar + req_clear_spacing) / (2.0 * r_center)
         if arg >= 1.0:
             return 0
         return math.floor(math.pi / math.asin(arg))
@@ -103,14 +128,18 @@ if submit_button:
     st.session_state["concrete_cover"] = concrete_cover
     st.session_state["mode"] = mode
     st.session_state["target_area_input"] = target_area_input
+    st.session_state["base_clear_spacing"] = base_clear_spacing
+    st.session_state["consider_lapping"] = consider_lapping
 
-# --- Render Results View if calculated data exists ---
+# --- Render Results View ---
 if "results" in st.session_state:
     results = st.session_state["results"]
     pile_diameter = st.session_state["pile_diameter"]
     concrete_cover = st.session_state["concrete_cover"]
     mode = st.session_state["mode"]
     target_area_input = st.session_state["target_area_input"]
+    base_clear_spacing = st.session_state["base_clear_spacing"]
+    consider_lapping = st.session_state["consider_lapping"]
 
     if not results:
         st.error("No valid layout found within the given constraints.")
@@ -122,7 +151,7 @@ if "results" in st.session_state:
             target_area_mm2 = target_area_input * 100.0
             sorted_combos = sorted(results, key=lambda combo: abs(sum(l['area_mm2'] for l in combo) - target_area_mm2))
 
-        # --- Top Options Radio Selection Bar ---
+        # Top Options Radio Selection Bar
         st.subheader("🎯 Select Configuration Option")
         
         choice_options = []
@@ -166,10 +195,17 @@ if "results" in st.session_state:
             else:
                 st.metric(label="Total Steel Area ($A_s$)", value=f"{total_area_cm2:.2f} cm²")
 
+            # Active rules banner
+            lap_text = f"Lapping (+{best_combo[0]['diameter']}mm extra)" if consider_lapping else "No Lapping"
+            st.caption(f"ℹ️ **Active Criteria:** Min Base Clear = {base_clear_spacing:.0f} mm | {lap_text}")
+
             table_data = []
             for idx, l in enumerate(best_combo):
                 chord_c2c = 2.0 * l['r_center'] * math.sin(math.pi / l['count'])
-                straight_clear = chord_c2c - l['diameter']
+                straight_clear_single = chord_c2c - l['diameter']
+                
+                # Effective clear gap at lap location
+                lap_clear = straight_clear_single - (l['diameter'] if consider_lapping else 0.0)
                 
                 if idx == 0:
                     gap = "—"
@@ -182,8 +218,8 @@ if "results" in st.session_state:
                     "Layer": f"Layer {l['layer']}",
                     "Rebar Size": f"Ø{l['diameter']} mm",
                     "Count": l['count'],
-                    "Center Radius": f"{l['r_center']:.1f} mm",
-                    "Straight Edge Clear": f"{straight_clear:.1f} mm",
+                    "Single Bar Clear": f"{straight_clear_single:.1f} mm",
+                    "Clear Gap at Lap": f"{lap_clear:.1f} mm (Min: {base_clear_spacing:.0f}mm)",
                     "Gap to Outer Layer": gap,
                     "Layer Area": f"{l['area_mm2']/100.0:.2f} cm²"
                 })
