@@ -13,7 +13,7 @@ st.markdown("Adjust parameters on the left and click **Calculate** to find optim
 # --- Sidebar Inputs ---
 st.sidebar.header("Optimization Goal & Parameters")
 
-# Goal Selection
+# Goal Selection (Outside form so it toggles target input instantly)
 mode = st.sidebar.radio(
     "Optimization Goal:",
     ["Maximize Area", "Target Specific Area (cm²)"],
@@ -54,15 +54,29 @@ with st.sidebar.form(key="input_form"):
         help="Lapping adds 1x rebar diameter extra space between single bars so that at lap joints the clear gap doesn't drop below the minimum."
     )
 
+    is_no_lapping = (lapping_option == "No Lapping Required")
+
     agg_small = st.checkbox(
         "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
         value=False,
-        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm."
+        disabled=is_no_lapping,
+        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm. Disabled when 'No Lapping Required' is active."
     )
 
     st.markdown("---")
     st.subheader("Pile Geometry & Rebars")
-    
+
+    # Dynamic Spacing Input: appears when No Lapping is chosen
+    if is_no_lapping:
+        custom_min_spacing = st.number_input(
+            "Min. Edge Clear Spacing in Ring (mm)",
+            value=100.0,
+            step=5.0,
+            help="Custom minimum clear edge-to-edge distance between rebars in the same layer."
+        )
+    else:
+        custom_min_spacing = 80.0 if agg_small else 100.0
+
     pile_diameter = st.number_input("Pile Diameter (mm)", value=900.0, step=50.0)
     concrete_cover = st.number_input("Concrete Cover (mm)", value=75.0, step=5.0)
     shear_rebar_dia = st.number_input("Shear Reinforcement Diameter (mm)", value=14.0, step=1.0)
@@ -81,13 +95,9 @@ if submit_button:
         st.error("Invalid rebar sizes string. Please enter numbers separated by commas.")
         rebar_sizes = [16, 20, 25, 28, 32]
 
-    # Evaluate Lapping & Aggregate Rules
+    # Evaluate Lapping & Spacing
     consider_lapping = (lapping_option == "Consider Lapping (+1x rebar diameter extra space)")
-    
-    if not consider_lapping:
-        base_clear_spacing = 100.0
-    else:
-        base_clear_spacing = 80.0 if agg_small else 100.0
+    base_clear_spacing = custom_min_spacing
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
@@ -99,8 +109,7 @@ if submit_button:
             arg = (d_eff + req_clear_spacing) / (2.0 * r_center)
             if arg >= 1.0:
                 return 0
-            n_raw = math.floor(math.pi / math.asin(arg))
-            return n_raw
+            return math.floor(math.pi / math.asin(arg))
         else:
             d_eff = (d1 + d2) / 2.0
             max_d = max(d1, d2)
