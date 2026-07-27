@@ -10,55 +10,39 @@ st.set_page_config(page_title="Concrete Pile Reinforcement Optimizer", layout="w
 st.title("🏗️ Concrete Pile Reinforcement Optimizer")
 st.markdown("Adjust parameters on the left and click **Calculate** to find optimal rebar layouts.")
 
-# --- Session State Initialization for Inter-dependent Widgets ---
-if "agg_small_key" not in st.session_state:
-    st.session_state["agg_small_key"] = False
-
-if "lapping_option_key" not in st.session_state:
-    st.session_state["lapping_option_key"] = "Consider Lapping (+1x rebar diameter extra space)"
-
-# Callback to automatically uncheck aggregate size < 20mm when "No Lapping Required" is chosen
-def on_lapping_change():
-    if st.session_state["lapping_option_key"] == "No Lapping Required":
-        st.session_state["agg_small_key"] = False
-
-# --- Sidebar Inputs inside a FORM ---
+# --- Sidebar Inputs ---
 st.sidebar.header("Optimization Goal & Parameters")
 
+# 1. Goal Selection (OUTSIDE form so it toggles instantly)
+mode = st.sidebar.radio(
+    "Optimization Goal:",
+    ["Maximize Area", "Target Specific Area (cm²)"],
+    help="Select whether to find the layout with the absolute maximum steel area or match a target area."
+)
+
+target_area_input = st.sidebar.number_input(
+    "Target Reinforcement Area (cm²)", 
+    value=200.0, 
+    step=5.0, 
+    disabled=(mode == "Maximize Area")
+)
+
+st.sidebar.markdown("---")
+
+# 2. Geometry & Rules Form (INSIDE form to avoid auto-recalculating on every keystroke)
 with st.sidebar.form(key="input_form"):
-    mode = st.radio(
-        "Optimization Goal:",
-        ["Maximize Area", "Target Specific Area (cm²)"],
-        help="Select whether to find the layout with the absolute maximum steel area or match a target area."
-    )
-    
-    target_area_input = st.number_input(
-        "Target Reinforcement Area (cm²)", 
-        value=200.0, 
-        step=5.0, 
-        disabled=(mode == "Maximize Area")
-    )
-    
-    st.markdown("---")
     st.subheader("Concrete & Lapping Rules")
 
-    # Lapping Selection with Callback
     lapping_option = st.radio(
         "Lapping Condition:",
         ["Consider Lapping (+1x rebar diameter extra space)", "No Lapping Required"],
-        key="lapping_option_key",
-        on_change=on_lapping_change,
         help="Lapping adds 1x rebar diameter extra space between single bars so that at lap joints the clear gap doesn't drop below the minimum."
     )
 
-    # Aggregate Size Checkbox (disabled/deselected when No Lapping is selected)
-    is_no_lapping = (st.session_state["lapping_option_key"] == "No Lapping Required")
-    
     agg_small = st.checkbox(
         "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
-        key="agg_small_key",
-        disabled=is_no_lapping,
-        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm. Automatically disabled if 'No Lapping Required' is selected."
+        value=False,
+        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm."
     )
 
     st.markdown("---")
@@ -82,9 +66,13 @@ if submit_button:
         st.error("Invalid rebar sizes string. Please enter numbers separated by commas.")
         rebar_sizes = [16, 20, 25, 28, 32]
 
-    # Base Spacing Calculation
-    base_clear_spacing = 80.0 if (agg_small and not is_no_lapping) else 100.0
+    # Evaluate Lapping & Aggregate Rules
     consider_lapping = (lapping_option == "Consider Lapping (+1x rebar diameter extra space)")
+    
+    if not consider_lapping:
+        base_clear_spacing = 100.0
+    else:
+        base_clear_spacing = 80.0 if agg_small else 100.0
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
@@ -206,7 +194,7 @@ if "results" in st.session_state:
             else:
                 st.metric(label="Total Steel Area ($A_s$)", value=f"{total_area_cm2:.2f} cm²")
 
-            lap_text = f"Lapping (+{best_combo[0]['diameter']}mm extra)" if consider_lapping else "No Lapping"
+            lap_text = f"Lapping (+{best_combo[0]['diameter']}mm extra space)" if consider_lapping else "No Lapping"
             st.caption(f"ℹ️ **Active Criteria:** Min Base Clear = {base_clear_spacing:.0f} mm | {lap_text}")
 
             table_data = []
