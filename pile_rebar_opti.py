@@ -31,6 +31,21 @@ st.sidebar.markdown("---")
 
 # Form for geometry and constraints
 with st.sidebar.form(key="input_form"):
+    st.subheader("Structural & Symmetry Rules")
+
+    enforce_symmetry = st.checkbox(
+        "Enforce Bending Symmetry (Min. 4 bars/layer & even counts)",
+        value=True,
+        help="Ensures every layer has at least 4 bars and an even count (4, 6, 8, 10...) for equal 180° structural bending capacity."
+    )
+
+    allow_mixed_dia = st.checkbox(
+        "Allow mixed rebar diameters in same layer (Alternating / Symmetric)",
+        value=False,
+        help="Allows alternating two different bar sizes in a single layer (e.g. N/2 x Ø32 + N/2 x Ø25) while keeping full symmetry."
+    )
+
+    st.markdown("---")
     st.subheader("Concrete & Lapping Rules")
 
     lapping_option = st.radio(
@@ -43,15 +58,6 @@ with st.sidebar.form(key="input_form"):
         "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
         value=False,
         help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm."
-    )
-
-    st.markdown("---")
-    st.subheader("Mixed Diameters Rule")
-
-    allow_mixed_dia = st.checkbox(
-        "Allow mixed rebar diameters in same layer (Alternating / Symmetric)",
-        value=False,
-        help="Allows alternating two different bar sizes in a single layer (e.g. N/2 x Ø32 + N/2 x Ø25) while keeping full symmetry."
     )
 
     st.markdown("---")
@@ -85,7 +91,7 @@ if submit_button:
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
-    # Helper function: Check if N bars with mixed or single diameters fit in ring
+    # Helper function: Check max bars in ring
     def max_rebars_in_ring(r_center, d1, d2=None):
         if d2 is None or d1 == d2:
             d_eff = d1
@@ -93,17 +99,17 @@ if submit_button:
             arg = (d_eff + req_clear_spacing) / (2.0 * r_center)
             if arg >= 1.0:
                 return 0
-            return math.floor(math.pi / math.asin(arg))
+            n_raw = math.floor(math.pi / math.asin(arg))
+            return n_raw
         else:
-            # For alternating mixed bars, N must be even (2, 4, 6, ...)
             d_eff = (d1 + d2) / 2.0
             max_d = max(d1, d2)
             req_clear_spacing = base_clear_spacing + (max_d if consider_lapping else 0.0)
             arg = (d_eff + req_clear_spacing) / (2.0 * r_center)
             if arg >= 1.0:
                 return 0
-            n_max_raw = math.floor(math.pi / math.asin(arg))
-            return n_max_raw - (n_max_raw % 2) # Ensure even count
+            n_raw = math.floor(math.pi / math.asin(arg))
+            return n_raw - (n_raw % 2) # Must be even for alternating mixed
 
     results = []
 
@@ -115,12 +121,22 @@ if submit_button:
 
         N_max = max_rebars_in_ring(r_center, d1, d2)
 
+        # Minimum bar count filter
+        min_N = 4 if enforce_symmetry else 1
+
+        if N_max < min_N:
+            return
+
         if layer_idx == 1:
-            valid_N_list = list(range(1, N_max + 1)) if d1 == d2 else list(range(2, N_max + 1, 2))
+            raw_N_list = list(range(min_N, N_max + 1))
         else:
-            valid_N_list = [n for n in range(1, min(N_max, parent_N) + 1) if parent_N % n == 0]
-            if d1 != d2:
-                valid_N_list = [n for n in valid_N_list if n % 2 == 0]
+            raw_N_list = [n for n in range(min_N, min(N_max, parent_N) + 1) if parent_N % n == 0]
+
+        # Symmetry Filter: Even counts only
+        if enforce_symmetry or d1 != d2:
+            valid_N_list = [n for n in raw_N_list if n % 2 == 0]
+        else:
+            valid_N_list = raw_N_list
 
         for N in valid_N_list:
             if d1 == d2:
@@ -148,7 +164,6 @@ if submit_button:
             results.append(new_combo)
 
             if layer_idx < max_layers:
-                # Build next layer rebar pairs
                 next_pairs = [(d, d) for d in rebar_sizes]
                 if allow_mixed_dia:
                     for i_a in range(len(rebar_sizes)):
@@ -162,7 +177,6 @@ if submit_button:
                     search_layers_recursive(layer_idx + 1, next_outer_edge, N, new_combo, d_next1, d_next2)
 
     if r_outer_edge_max > 0:
-        # Initial pairs for layer 1
         layer1_pairs = [(d, d) for d in rebar_sizes]
         if allow_mixed_dia:
             for i_a in range(len(rebar_sizes)):
@@ -180,6 +194,7 @@ if submit_button:
     st.session_state["target_area_input"] = target_area_input
     st.session_state["base_clear_spacing"] = base_clear_spacing
     st.session_state["consider_lapping"] = consider_lapping
+    st.session_state["enforce_symmetry"] = enforce_symmetry
 
 # --- Render Results View ---
 if "results" in st.session_state:
@@ -190,9 +205,10 @@ if "results" in st.session_state:
     target_area_input = st.session_state["target_area_input"]
     base_clear_spacing = st.session_state["base_clear_spacing"]
     consider_lapping = st.session_state["consider_lapping"]
+    enforce_symmetry = st.session_state.get("enforce_symmetry", True)
 
     if not results:
-        st.error("No valid layout found within the given constraints.")
+        st.error("No valid layout found within the given constraints. Try unchecking symmetry or decreasing cover.")
     else:
         if mode == "Maximize Area":
             sorted_combos = sorted(results, key=lambda combo: sum(l['area_mm2'] for l in combo), reverse=True)
@@ -242,8 +258,9 @@ if "results" in st.session_state:
             else:
                 st.metric(label="Total Steel Area ($A_s$)", value=f"{total_area_cm2:.2f} cm²")
 
-            lap_text = f"Lapping (+{best_combo[0]['max_d']}mm extra space)" if consider_lapping else "No Lapping"
-            st.caption(f"ℹ️ **Active Criteria:** Min Base Clear = {base_clear_spacing:.0f} mm | {lap_text}")
+            lap_text = f"Lapping (+{best_combo[0]['max_d']}mm extra)" if consider_lapping else "No Lapping"
+            sym_text = "Enforced (Min 4, Even)" if enforce_symmetry else "Off"
+            st.caption(f"ℹ️ **Active Criteria:** Bending Symmetry = {sym_text} | Min Base Clear = {base_clear_spacing:.0f} mm | {lap_text}")
 
             table_data = []
             for idx, l in enumerate(best_combo):
@@ -302,7 +319,6 @@ if "results" in st.session_state:
                     x = r_c * np.cos(angle)
                     y = r_c * np.sin(angle)
                     
-                    # Alternate diameters if mixed
                     d_current = d1 if (idx % 2 == 0 or d1 == d2) else d2
                     
                     label = f"Layer {l['layer']}: {l['diameter_text']}" if idx == 0 else None
