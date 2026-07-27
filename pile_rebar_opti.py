@@ -10,10 +10,10 @@ st.set_page_config(page_title="Concrete Pile Reinforcement Optimizer", layout="w
 st.title("🏗️ Concrete Pile Reinforcement Optimizer")
 st.markdown("Adjust parameters on the left and click **Calculate** to find optimal rebar layouts.")
 
-# --- Sidebar Inputs ---
-st.sidebar.header("Optimization Goal & Parameters")
+# --- Sidebar Inputs (OUTSIDE FORM FOR INSTANT INTERACTIVITY) ---
+st.sidebar.header("Optimization Goal & Lapping Rules")
 
-# Goal Selection (Outside form so it toggles target input instantly)
+# 1. Goal Selection
 mode = st.sidebar.radio(
     "Optimization Goal:",
     ["Maximize Area", "Target Specific Area (cm²)"],
@@ -29,7 +29,29 @@ target_area_input = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 
-# Form for geometry and constraints
+# 2. Lapping Selection & Dynamic Spacing Input
+lapping_option = st.sidebar.radio(
+    "Lapping Condition:",
+    ["Consider Lapping (+1x rebar diameter extra space)", "No Lapping Required"],
+    help="Lapping adds 1x rebar diameter extra space between single bars so that at lap joints the clear gap doesn't drop below the minimum."
+)
+
+is_no_lapping = (lapping_option == "No Lapping Required")
+
+# Dynamic Spacing Input: Instantly appears when No Lapping is selected
+if is_no_lapping:
+    custom_min_spacing = st.sidebar.number_input(
+        "Min. Edge Clear Spacing in Ring (mm)",
+        value=100.0,
+        step=5.0,
+        help="Custom minimum clear edge-to-edge distance between rebars in the same layer."
+    )
+else:
+    custom_min_spacing = 100.0  # Default base value for lapping mode
+
+st.sidebar.markdown("---")
+
+# 3. Form for remaining geometry and constraints (INSIDE FORM to avoid auto-recalculating on typing)
 with st.sidebar.form(key="input_form"):
     st.subheader("Structural & Symmetry Rules")
 
@@ -46,36 +68,17 @@ with st.sidebar.form(key="input_form"):
     )
 
     st.markdown("---")
-    st.subheader("Concrete & Lapping Rules")
-
-    lapping_option = st.radio(
-        "Lapping Condition:",
-        ["Consider Lapping (+1x rebar diameter extra space)", "No Lapping Required"],
-        help="Lapping adds 1x rebar diameter extra space between single bars so that at lap joints the clear gap doesn't drop below the minimum."
-    )
-
-    is_no_lapping = (lapping_option == "No Lapping Required")
+    st.subheader("Aggregate Size")
 
     agg_small = st.checkbox(
         "Aggregate size < 20 mm (Reduces min clear gap to 80 mm)",
         value=False,
         disabled=is_no_lapping,
-        help="If checked, base minimum clear distance between bars in the same ring drops from 100 mm to 80 mm. Disabled when 'No Lapping Required' is active."
+        help="If checked, base minimum clear distance drops from 100 mm to 80 mm. Disabled when 'No Lapping Required' is active."
     )
 
     st.markdown("---")
     st.subheader("Pile Geometry & Rebars")
-
-    # Dynamic Spacing Input: appears when No Lapping is chosen
-    if is_no_lapping:
-        custom_min_spacing = st.number_input(
-            "Min. Edge Clear Spacing in Ring (mm)",
-            value=100.0,
-            step=5.0,
-            help="Custom minimum clear edge-to-edge distance between rebars in the same layer."
-        )
-    else:
-        custom_min_spacing = 80.0 if agg_small else 100.0
 
     pile_diameter = st.number_input("Pile Diameter (mm)", value=900.0, step=50.0)
     concrete_cover = st.number_input("Concrete Cover (mm)", value=75.0, step=5.0)
@@ -95,9 +98,13 @@ if submit_button:
         st.error("Invalid rebar sizes string. Please enter numbers separated by commas.")
         rebar_sizes = [16, 20, 25, 28, 32]
 
-    # Evaluate Lapping & Spacing
+    # Evaluate Lapping & Spacing Rules
     consider_lapping = (lapping_option == "Consider Lapping (+1x rebar diameter extra space)")
-    base_clear_spacing = custom_min_spacing
+    
+    if consider_lapping:
+        base_clear_spacing = 80.0 if agg_small else 100.0
+    else:
+        base_clear_spacing = custom_min_spacing
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
