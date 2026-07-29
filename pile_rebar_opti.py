@@ -7,7 +7,7 @@ import streamlit as st
 # Page Configuration
 st.set_page_config(page_title="Concrete Pile Reinforcement Optimizer", layout="wide")
 
-st.title("🏗️ Concrete Pile Reinforcement Optimizer")
+st.title("Concrete Pile Reinforcement Optimizer")
 st.markdown("Adjust parameters on the left and click **Calculate** to find optimal rebar layouts.")
 
 # --- Sidebar Inputs (OUTSIDE FORM FOR INSTANT INTERACTIVITY) ---
@@ -20,12 +20,22 @@ mode = st.sidebar.radio(
     help="Select whether to find the layout with the absolute maximum steel area or match a target area."
 )
 
+is_target_mode = (mode == "Target Specific Area (cm²)")
+
 target_area_input = st.sidebar.number_input(
     "Target Reinforcement Area (cm²)", 
     value=200.0, 
     step=5.0, 
-    disabled=(mode == "Maximize Area")
+    disabled=not is_target_mode
 )
+
+only_positive_diff = False
+if is_target_mode:
+    only_positive_diff = st.sidebar.checkbox(
+        "Only show layouts ≥ target area (As,provided ≥ As,req)",
+        value=True,
+        help="Filters out layouts that provide less steel area than the target."
+    )
 
 st.sidebar.markdown("---")
 
@@ -38,7 +48,6 @@ lapping_option = st.sidebar.radio(
 
 is_no_lapping = (lapping_option == "No Lapping Required")
 
-# Dynamic Spacing Input: Instantly appears when No Lapping is selected
 if is_no_lapping:
     custom_min_spacing = st.sidebar.number_input(
         "Min. Edge Clear Spacing in Ring (mm)",
@@ -47,24 +56,24 @@ if is_no_lapping:
         help="Custom minimum clear edge-to-edge distance between rebars in the same layer."
     )
 else:
-    custom_min_spacing = 100.0  # Default base value for lapping mode
+    custom_min_spacing = 100.0
 
 st.sidebar.markdown("---")
 
-# 3. Form for remaining geometry and constraints (INSIDE FORM to avoid auto-recalculating on typing)
+# 3. Form for remaining geometry and constraints
 with st.sidebar.form(key="input_form"):
     st.subheader("Structural & Symmetry Rules")
 
     enforce_symmetry = st.checkbox(
         "Enforce Bending Symmetry (Min. 4 bars/layer & even counts)",
         value=True,
-        help="Ensures every layer has at least 4 bars and an even count (4, 6, 8, 10...) for equal 180° structural bending capacity."
+        help="Ensures every layer has at least 4 bars and an even count (4, 6, 8, 10...) for equal structural bending capacity."
     )
 
     allow_mixed_dia = st.checkbox(
         "Allow mixed rebar diameters in same layer (Alternating / Symmetric)",
         value=False,
-        help="Allows alternating two different bar sizes in a single layer (e.g. N/2 x Ø32 + N/2 x Ø25) while keeping full symmetry."
+        help="Allows alternating two different bar sizes in a single layer (e.g. N/2 x Ø32 + N/2 x Ø25) while keeping equal orthogonal bending strength (requires N = 8, 12, 16...)."
     )
 
     st.markdown("---")
@@ -98,7 +107,6 @@ if submit_button:
         st.error("Invalid rebar sizes string. Please enter numbers separated by commas.")
         rebar_sizes = [16, 20, 25, 28, 32]
 
-    # Evaluate Lapping & Spacing Rules
     consider_lapping = (lapping_option == "Consider Lapping (+1x rebar diameter extra space)")
     
     if consider_lapping:
@@ -108,7 +116,6 @@ if submit_button:
 
     r_outer_edge_max = (pile_diameter / 2.0) - concrete_cover - shear_rebar_dia
 
-    # Helper function: Check max bars in ring
     def max_rebars_in_ring(r_center, d1, d2=None):
         if d2 is None or d1 == d2:
             d_eff = d1
@@ -125,7 +132,8 @@ if submit_button:
             if arg >= 1.0:
                 return 0
             n_raw = math.floor(math.pi / math.asin(arg))
-            return n_raw - (n_raw % 2) # Must be even for alternating mixed
+            # Must be a multiple of 4 and >= 8 for equal orthogonal axis strength
+            return n_raw - (n_raw % 4)
 
     results = []
 
@@ -137,8 +145,13 @@ if submit_button:
 
         N_max = max_rebars_in_ring(r_center, d1, d2)
 
-        # Minimum bar count filter
-        min_N = 4 if enforce_symmetry else 1
+        # Minimum bar count: Mixed diameters require at least 8 bars for biaxial symmetry
+        if d1 != d2:
+            min_N = 8
+        elif enforce_symmetry:
+            min_N = 4
+        else:
+            min_N = 1
 
         if N_max < min_N:
             return
@@ -148,8 +161,12 @@ if submit_button:
         else:
             raw_N_list = [n for n in range(min_N, min(N_max, parent_N) + 1) if parent_N % n == 0]
 
-        # Symmetry Filter: Even counts only
-        if enforce_symmetry or d1 != d2:
+        # Symmetry Filter:
+        # Mixed diameters (d1 != d2): N MUST be a multiple of 4 AND >= 8 (8, 12, 16, 20...).
+        # Single diameter with symmetry: N MUST be even (4, 6, 8, 10...).
+        if d1 != d2:
+            valid_N_list = [n for n in raw_N_list if n % 4 == 0 and n >= 8]
+        elif enforce_symmetry:
             valid_N_list = [n for n in raw_N_list if n % 2 == 0]
         else:
             valid_N_list = raw_N_list
@@ -202,12 +219,12 @@ if submit_button:
         for d1, d2 in layer1_pairs:
             search_layers_recursive(1, r_outer_edge_max, None, [], d1, d2)
 
-    # Save results into Session State
     st.session_state["results"] = results
     st.session_state["pile_diameter"] = pile_diameter
     st.session_state["concrete_cover"] = concrete_cover
     st.session_state["mode"] = mode
     st.session_state["target_area_input"] = target_area_input
+    st.session_state["only_positive_diff"] = only_positive_diff
     st.session_state["base_clear_spacing"] = base_clear_spacing
     st.session_state["consider_lapping"] = consider_lapping
     st.session_state["enforce_symmetry"] = enforce_symmetry
@@ -219,6 +236,7 @@ if "results" in st.session_state:
     concrete_cover = st.session_state["concrete_cover"]
     mode = st.session_state["mode"]
     target_area_input = st.session_state["target_area_input"]
+    only_positive_diff = st.session_state.get("only_positive_diff", False)
     base_clear_spacing = st.session_state["base_clear_spacing"]
     consider_lapping = st.session_state["consider_lapping"]
     enforce_symmetry = st.session_state.get("enforce_symmetry", True)
@@ -228,9 +246,27 @@ if "results" in st.session_state:
     else:
         if mode == "Maximize Area":
             sorted_combos = sorted(results, key=lambda combo: sum(l['area_mm2'] for l in combo), reverse=True)
+            target_unreachable = False
         else:
             target_area_mm2 = target_area_input * 100.0
-            sorted_combos = sorted(results, key=lambda combo: abs(sum(l['area_mm2'] for l in combo) - target_area_mm2))
+            
+            if only_positive_diff:
+                pos_results = [c for c in results if sum(l['area_mm2'] for l in c) >= target_area_mm2]
+                if not pos_results:
+                    target_unreachable = True
+                    max_possible = max(sum(l['area_mm2'] for l in c) for c in results) / 100.0
+                    st.warning(
+                        f"⚠️ **Target area could not be reached!** "
+                        f"The requested target ({target_area_input:.2f} cm²) exceeds the maximum geometrically achievable steel area "
+                        f"({max_possible:.2f} cm²) under current constraints. Displaying best available choices below:"
+                    )
+                    sorted_combos = sorted(results, key=lambda combo: sum(l['area_mm2'] for l in combo), reverse=True)
+                else:
+                    target_unreachable = False
+                    sorted_combos = sorted(pos_results, key=lambda combo: sum(l['area_mm2'] for l in combo) - target_area_mm2)
+            else:
+                target_unreachable = False
+                sorted_combos = sorted(results, key=lambda combo: abs(sum(l['area_mm2'] for l in combo) - target_area_mm2))
 
         st.subheader("🎯 Select Configuration Option")
         
